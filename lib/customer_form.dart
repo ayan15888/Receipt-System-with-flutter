@@ -6,6 +6,14 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:screenshot/screenshot.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:path_provider/path_provider.dart';
+import 'screens/credit_customers_screen.dart';
+import 'package:intl/intl.dart';
+import '../models/receipt.dart';
+import '../services/receipt_service.dart';
+import 'screens/history_screen.dart';
+import 'package:google_fonts/google_fonts.dart';
+import '../main.dart'; // Import to access StatusColors
+import 'services/pdf_service.dart';
 
 void main() => runApp(const MyApp());
 
@@ -17,9 +25,28 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Customer Form and Screenshot',
       theme: ThemeData(
-        primarySwatch: Colors.green,
-        textTheme: const TextTheme(
-          bodyMedium: TextStyle(color: Colors.black, fontSize: 12),
+        primarySwatch: Colors.red,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFFB71C1C), // Deep red (primary color for meat shop)
+          brightness: Brightness.light,
+        ).copyWith(
+          primary: const Color(0xFFB71C1C), // Deep red
+          secondary: const Color(0xFF8D4C2E), // Warm brown
+          tertiary: const Color(0xFF5D4037), // Dark brown
+        ),
+        textTheme: GoogleFonts.bricolageGrotesqueTextTheme(
+          const TextTheme(
+            bodyMedium: TextStyle(color: Colors.black, fontSize: 12),
+          ),
+        ),
+        appBarTheme: AppBarTheme(
+          backgroundColor: const Color(0xFFB71C1C),
+          foregroundColor: Colors.white,
+          titleTextStyle: GoogleFonts.bricolageGrotesque(
+            fontSize: 20,
+            fontWeight: FontWeight.bold,
+            color: Colors.white,
+          ),
         ),
       ),
       home: const PermissionPage(),
@@ -92,16 +119,22 @@ class CustomerForm extends StatefulWidget {
   State<CustomerForm> createState() => _CustomerFormState();
 }
 
-class _CustomerFormState extends State<CustomerForm> {
+class _CustomerFormState extends State<CustomerForm> with SingleTickerProviderStateMixin {
   final _formKey = GlobalKey<FormState>();
   final ScreenshotController screenshotController = ScreenshotController();
+  late AnimationController _animationController;
+  late Animation<double> _fadeAnimation;
 
   final TextEditingController _kgController = TextEditingController();
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _advanceController = TextEditingController();
   final TextEditingController _remainingController = TextEditingController();
   final TextEditingController _totalController = TextEditingController();
+  final TextEditingController _notesController = TextEditingController();
   DateTime? _selectedDate;
+  String _paymentMethod = 'Cash';
+  bool _isPaid = false;
+  final String _shopName = "Qurashi Meat";
 
   @override
   void initState() {
@@ -112,6 +145,23 @@ class _CustomerFormState extends State<CustomerForm> {
         .addListener(() => setState(() => _updateRemainingPayment()));
     _totalController
         .addListener(() => setState(() => _updateRemainingPayment()));
+
+    _animationController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 800),
+    );
+
+    _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(parent: _animationController, curve: Curves.easeOut),
+    );
+
+    _animationController.forward();
+  }
+
+  @override
+  void dispose() {
+    _animationController.dispose();
+    super.dispose();
   }
 
   void _updateRemainingPayment() {
@@ -131,7 +181,115 @@ class _CustomerFormState extends State<CustomerForm> {
       final file = File(imagePath);
       await file.writeAsBytes(image);
       await Share.shareXFiles([XFile(file.path)],
-          text: 'Here is your receipt! ');
+          text: 'Here is your receipt from $_shopName!');
+    }
+  }
+
+  Future<void> _generatePdf() async {
+    // Check if form is valid
+    if (_formKey.currentState!.validate()) {
+      final receipt = Receipt(
+        productName: _nameController.text,
+        quantity: _kgController.text,
+        totalAmount: double.parse(_totalController.text),
+        advanceAmount: double.parse(_advanceController.text),
+        remainingAmount: double.parse(_totalController.text) - double.parse(_advanceController.text),
+        paymentMethod: _paymentMethod,
+        isPaid: _isPaid,
+        notes: _notesController.text,
+        dueDate: _selectedDate,
+        shopName: _shopName,
+      );
+
+      showDialog(
+        context: context,
+        builder: (BuildContext context) {
+          return AlertDialog(
+            title: Text('PDF Options', style: GoogleFonts.bricolageGrotesque(fontWeight: FontWeight.bold)),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.visibility),
+                  title: Text('Preview PDF', style: GoogleFonts.bricolageGrotesque()),
+                  onTap: () async {
+                    Navigator.pop(context);
+                    await PdfService.printReceipt(receipt);
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.save_alt),
+                  title: Text('Save & Share PDF', style: GoogleFonts.bricolageGrotesque()),
+                  onTap: () async {
+                    Navigator.pop(context);
+                    final file = await PdfService.saveReceipt(receipt);
+                    if (context.mounted) {
+                      await Share.shareXFiles(
+                        [XFile(file.path)],
+                        text: 'Receipt from $_shopName',
+                      );
+                    }
+                  },
+                ),
+              ],
+            ),
+          );
+        },
+      );
+    }
+  }
+
+  void _handleSubmit() async {
+    if (_formKey.currentState!.validate()) {
+      _formKey.currentState!.save();
+      
+      final receipt = Receipt(
+        productName: _nameController.text,
+        quantity: _kgController.text,
+        totalAmount: double.parse(_totalController.text),
+        advanceAmount: double.parse(_advanceController.text),
+        remainingAmount: double.parse(_totalController.text) - double.parse(_advanceController.text),
+        paymentMethod: _paymentMethod,
+        isPaid: _isPaid,
+        notes: _notesController.text,
+        dueDate: _selectedDate,
+        shopName: _shopName,
+      );
+
+      try {
+        await ReceiptService.saveReceipt(receipt);
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Receipt saved successfully'),
+              backgroundColor: Colors.green,
+            ),
+          );
+          
+          // Clear the form
+          _formKey.currentState!.reset();
+          _nameController.clear();
+          _kgController.clear();
+          _totalController.clear();
+          _advanceController.clear();
+          _notesController.clear();
+          setState(() {
+            _paymentMethod = 'Cash';
+            _isPaid = false;
+            _selectedDate = null;
+          });
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Error saving receipt: ${e.toString()}'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      }
     }
   }
 
@@ -139,187 +297,383 @@ class _CustomerFormState extends State<CustomerForm> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Receipt Form', style: TextStyle(color: Colors.white,fontFamily: 'Courier',fontWeight: FontWeight.bold,fontSize: 25)),
-        centerTitle: true,
-        backgroundColor: Colors.green,
+        title: Text(
+          'New Receipt',
+          style: Theme.of(context).textTheme.titleLarge?.copyWith(
+            color: Colors.white,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.history),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const HistoryScreen()),
+              );
+            },
+          ),
+          IconButton(
+            icon: const Icon(Icons.person_outline),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const CreditCustomersScreen()),
+              );
+            },
+          ),
+        ],
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(12.0),
-        child: Form(
-          key: _formKey,
-          child: ListView(
-            children: [
-              _buildTextField(
-                  _kgController, 'Number of KG', TextInputType.number,
-                  icon: Icons.format_list_numbered),
-              _buildTextField(
-                  _nameController, 'Product Name', TextInputType.text,
-                  icon: Icons.shopping_cart),
-              _buildTextField(
-                _totalController,
-                'Total Payment',
-                TextInputType.number,
-                icon: Icons.monetization_on,
-                onChanged: (_) => _updateRemainingPayment(),
-              ),
-              _buildTextField(
-                _advanceController,
-                'Advance Payment',
-                TextInputType.number,
-                icon: Icons.payment,
-                onChanged: (_) => _updateRemainingPayment(),
-              ),
-              _buildReadOnlyTextField(
-                  _remainingController, 'Remaining Payment'),
-              _buildDatePickerButton(),
-              _buildCustomerSummaryCard(),
-              const SizedBox(height: 12),
-              Padding(
-                padding: const EdgeInsets.only(left: 75, right: 75),
-                child: ElevatedButton.icon(
-                  onPressed: _shareScreenshot,
-                  icon: Icon(
-                    Icons.share,
-                    color: Colors.black,
-                    size: 24,
-                  ), // Icon widget
-                  label: const Text(
-                    'Share Screenshot',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.black,
-                    ),
-                  ), // Text widget for the label
-                  style: ElevatedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    backgroundColor: Colors.green[500],
+      body: FadeTransition(
+        opacity: _fadeAnimation,
+        child: Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [
+                Theme.of(context).colorScheme.background,
+                Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.3),
+              ],
+            ),
+          ),
+          child: Form(
+            key: _formKey,
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Card(
+                    elevation: 2,
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(30),
-                      side: BorderSide(
-                          color: Colors.black,
-                          width: 1), // Correctly added border
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Customer Details',
+                            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          TextFormField(
+                            controller: _nameController,
+                            decoration: InputDecoration(
+                              labelText: 'Customer Name',
+                              prefixIcon: Icon(
+                                Icons.person,
+                                color: Theme.of(context).colorScheme.primary,
+                              ),
+                            ),
+                            validator: (value) {
+                              if (value == null || value.isEmpty) {
+                                return 'Please enter customer name';
+                              }
+                              return null;
+                            },
+                          ),
+                          const SizedBox(height: 16),
+                          TextFormField(
+                            controller: _kgController,
+                            keyboardType: TextInputType.number,
+                            decoration: InputDecoration(
+                              labelText: 'Quantity (KG)',
+                              prefixIcon: Icon(
+                                Icons.scale,
+                                color: Theme.of(context).colorScheme.primary,
+                              ),
+                            ),
+                            validator: (value) {
+                              if (value == null || value.isEmpty) {
+                                return 'Please enter quantity';
+                              }
+                              return null;
+                            },
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-                ),
+                  const SizedBox(height: 16),
+                  Card(
+                    elevation: 2,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Payment Details',
+                            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          TextFormField(
+                            controller: _totalController,
+                            keyboardType: TextInputType.number,
+                            decoration: InputDecoration(
+                              labelText: 'Total Amount',
+                              prefixIcon: Icon(
+                                Icons.attach_money,
+                                color: Theme.of(context).colorScheme.primary,
+                              ),
+                            ),
+                            validator: (value) {
+                              if (value == null || value.isEmpty) {
+                                return 'Please enter total amount';
+                              }
+                              return null;
+                            },
+                          ),
+                          const SizedBox(height: 16),
+                          TextFormField(
+                            controller: _advanceController,
+                            keyboardType: TextInputType.number,
+                            decoration: InputDecoration(
+                              labelText: 'Advance Payment',
+                              prefixIcon: Icon(
+                                Icons.payments,
+                                color: Theme.of(context).colorScheme.primary,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          TextFormField(
+                            controller: _remainingController,
+                            enabled: false,
+                            decoration: InputDecoration(
+                              labelText: 'Remaining Amount',
+                              prefixIcon: Icon(
+                                Icons.account_balance_wallet,
+                                color: Theme.of(context).colorScheme.primary,
+                              ),
+                              filled: true,
+                              fillColor: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.3),
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: DropdownButtonFormField<String>(
+                                  value: _paymentMethod,
+                                  decoration: InputDecoration(
+                                    labelText: 'Payment Method',
+                                    prefixIcon: Icon(
+                                      Icons.payment,
+                                      color: Theme.of(context).colorScheme.primary,
+                                    ),
+                                  ),
+                                  items: ['Cash', 'Card', 'UPI']
+                                      .map((method) => DropdownMenuItem(
+                                            value: method,
+                                            child: Text(method),
+                                          ))
+                                      .toList(),
+                                  onChanged: (value) {
+                                    setState(() {
+                                      _paymentMethod = value!;
+                                    });
+                                  },
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 16),
+                          Row(
+                            children: [
+                              Checkbox(
+                                value: _isPaid,
+                                onChanged: (value) {
+                                  setState(() {
+                                    _isPaid = value!;
+                                  });
+                                },
+                              ),
+                              const Text('Fully Paid'),
+                              const Spacer(),
+                              TextButton.icon(
+                                icon: const Icon(Icons.calendar_today),
+                                label: Text(_selectedDate == null
+                                    ? 'Select Due Date'
+                                    : DateFormat('MMM dd, yyyy').format(_selectedDate!)),
+                                onPressed: () async {
+                                  final date = await showDatePicker(
+                                    context: context,
+                                    initialDate: _selectedDate ?? DateTime.now(),
+                                    firstDate: DateTime.now(),
+                                    lastDate: DateTime.now().add(const Duration(days: 365)),
+                                  );
+                                  if (date != null) {
+                                    setState(() {
+                                      _selectedDate = date;
+                                    });
+                                  }
+                                },
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Card(
+                    elevation: 2,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Additional Notes',
+                            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          TextFormField(
+                            controller: _notesController,
+                            maxLines: 3,
+                            decoration: InputDecoration(
+                              hintText: 'Add any additional notes here...',
+                              prefixIcon: Icon(
+                                Icons.note,
+                                color: Theme.of(context).colorScheme.primary,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  Row(
+                    children: [
+                      Expanded(
+                        flex: 1,
+                        child: MouseRegion(
+                          cursor: SystemMouseCursors.click,
+                          child: AnimatedContainer(
+                            duration: const Duration(milliseconds: 200),
+                            curve: Curves.easeInOut,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(16),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Theme.of(context).colorScheme.primary.withOpacity(0.3),
+                                  blurRadius: 8,
+                                  offset: const Offset(0, 4),
+                                ),
+                              ],
+                            ),
+                            child: ElevatedButton(
+                              onPressed: _handleSubmit,
+                              style: ElevatedButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(vertical: 16),
+                                backgroundColor: Theme.of(context).colorScheme.primary,
+                                foregroundColor: Colors.white,
+                                elevation: 0,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(16),
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  const Icon(Icons.save_rounded, size: 24, color: Colors.white),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    'Save',
+                                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.bold,
+                                      letterSpacing: 0.5,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        flex: 1,
+                        child: MouseRegion(
+                          cursor: SystemMouseCursors.click,
+                          child: AnimatedContainer(
+                            duration: const Duration(milliseconds: 200),
+                            curve: Curves.easeInOut,
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                colors: [
+                                  Theme.of(context).colorScheme.secondary,
+                                  Theme.of(context).colorScheme.primary,
+                                ],
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                              ),
+                              borderRadius: BorderRadius.circular(16),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Theme.of(context).colorScheme.primary.withOpacity(0.3),
+                                  blurRadius: 8,
+                                  offset: const Offset(0, 4),
+                                ),
+                              ],
+                            ),
+                            child: ElevatedButton(
+                              onPressed: _generatePdf,
+                              style: ElevatedButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(vertical: 16),
+                                backgroundColor: Colors.transparent,
+                                foregroundColor: Colors.white,
+                                elevation: 0,
+                                minimumSize: const Size.fromHeight(0),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(16),
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  const Icon(Icons.picture_as_pdf_rounded, size: 24, color: Colors.white),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    'PDF',
+                                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.bold,
+                                      letterSpacing: 0.5,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ),
-              SizedBox(
-                height: 100,
-              )
-            ],
+            ),
           ),
         ),
-      ),
-
-      // Updated Floating Action Button
-      // floatingActionButton: Container(
-      //   decoration: BoxDecoration(
-      //     color: Colors.lime, // Background color
-      //     borderRadius: BorderRadius.circular(30),
-      //     border: Border.all(
-      //       color: Colors.black, // Border color
-      //       width: 1, // Border width
-      //     ),
-      //   ),
-      //   child: FloatingActionButton.extended(
-      //     onPressed: () {
-      //       Navigator.push(
-      //         context,
-      //         MaterialPageRoute(
-      //           builder: (context) => listview(
-      //             Name: _nameController.text,
-      //             Kg: _kgController.text,
-      //             Total: _totalController.text,
-      //             Advance: _advanceController.text,
-      //             Remaining: _remainingController.text,
-      //             DueDate: _selectedDate.toString().split(' ')[0],
-      //             screenshotController: screenshotController,
-      //           ),
-      //         ),
-      //       );
-      //     },
-      //     label: const Text(
-      //       'Add to List',
-      //       style: TextStyle(color: Colors.black87),
-      //     ),
-      //     icon: const Icon(Icons.add),
-      //     backgroundColor: Colors
-      //         .transparent, // Make it transparent so container color is visible
-      //     elevation: 0, // Remove shadow if desired
-      //   ),
-      // ),
-    );
-  }
-
-  Widget _buildTextField(
-      TextEditingController controller, String label, TextInputType inputType,
-      {ValueChanged<String>? onChanged, IconData? icon}) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8.0),
-      child: TextFormField(
-        controller: controller,
-        keyboardType: inputType,
-        decoration: InputDecoration(
-          prefixIcon: Icon(icon),
-          labelText: label,
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-          filled: true,
-          fillColor: Colors.grey[100],
-          focusedBorder: OutlineInputBorder(
-            borderSide: BorderSide(color: const Color.fromARGB(255, 2, 59, 4), width: 2),
-            borderRadius: BorderRadius.circular(12),
-          ),
-        ),
-        validator: (value) => value!.isEmpty ? 'Please enter $label' : null,
-        onChanged: onChanged,
-      ),
-    );
-  }
-
-  Widget _buildReadOnlyTextField(
-      TextEditingController controller, String label) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8.0),
-      child: TextFormField(
-        
-        controller: controller,
-        readOnly: true,
-        decoration: InputDecoration(
-          
-          labelText: label,
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-          filled: true,
-          prefixIcon: const Icon(Icons.money),
-          fillColor: Colors.grey[200],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildDatePickerButton() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8.0),
-      child: ElevatedButton(
-        onPressed: () async {
-          final DateTime? pickedDate = await showDatePicker(
-            context: context,
-            initialDate: DateTime.now(),
-            firstDate: DateTime(2000),
-            lastDate: DateTime(2100),
-          );
-          if (pickedDate != null) {
-            setState(() => _selectedDate = pickedDate);
-          }
-        },
-        style: ElevatedButton.styleFrom(
-          padding: const EdgeInsets.symmetric(vertical: 14),
-          backgroundColor: Colors.grey[200],
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
-        ),
-        child: Text(_selectedDate == null
-            ? 'Pick Date'
-            : 'Due Date : ${_selectedDate.toString().split(' ')[0]}'),
       ),
     );
   }
@@ -395,24 +749,27 @@ class _CustomerFormState extends State<CustomerForm> {
   }
 
   Widget _buildDetailRow(String label, String value, {bool isRed = false}) {
+    final statusColors = Theme.of(context).extension<StatusColors>();
+    final primaryColor = Theme.of(context).colorScheme.primary;
+    final pendingColor = statusColors?.pending ?? const Color(0xFFF57C00);
+    
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
         Text(
           label,
-          style: const TextStyle(
+          style: GoogleFonts.bricolageGrotesque(
             fontSize: 10,
             fontWeight: FontWeight.bold,
             color: Colors.black,
-            fontFamily: 'Courier',
           ),
         ),
         Text(
           value.isNotEmpty ? value : "-",
-          style: TextStyle(
+          style: GoogleFonts.bricolageGrotesque(
             fontSize: 10,
             fontWeight: FontWeight.w400,
-            color: isRed ? Colors.red : Colors.black54,
+            color: isRed ? pendingColor : Colors.black54,
           ),
         ),
       ],
@@ -424,7 +781,7 @@ class _CustomerFormState extends State<CustomerForm> {
       padding: const EdgeInsets.symmetric(vertical: 4.0),
       child: Text(
         text,
-        style: TextStyle(
+        style: GoogleFonts.bricolageGrotesque(
           color: Colors.black, // Softer black for other text
           fontSize: 10,
           fontWeight: FontWeight.w400,
@@ -433,3 +790,4 @@ class _CustomerFormState extends State<CustomerForm> {
     );
   }
 }
+
